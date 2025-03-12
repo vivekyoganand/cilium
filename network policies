@@ -1,4 +1,29 @@
-# complete-application.yaml
+# Delete existing resources
+kubectl delete deployment frontend backend
+kubectl delete service frontend-service backend-service
+kubectl delete configmap nginx-config
+kubectl delete ciliumnetworkpolicy basic-policy
+
+# complete-app.yaml
+---
+# Nginx ConfigMap for Backend
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  nginx.conf: |
+    events {
+      worker_connections  1024;
+    }
+    http {
+      server {
+        listen 8080;
+        location / {
+          return 200 'Hello from backend\n';
+        }
+      }
+    }
 ---
 # Frontend Deployment
 apiVersion: apps/v1
@@ -53,6 +78,14 @@ spec:
         image: nginx
         ports:
         - containerPort: 8080
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-config
 ---
 # Backend Service
 apiVersion: v1
@@ -84,337 +117,77 @@ spec:
       - port: "8080"
         protocol: TCP
 
-# Apply the complete configuration
-kubectl apply -f complete-application.yaml
+# 1. Delete all existing resources
+kubectl delete deployment frontend backend
+kubectl delete service frontend-service backend-service
+kubectl delete configmap nginx-config
+kubectl delete ciliumnetworkpolicy basic-policy
 
-# Verify deployments
-kubectl get deployments
-kubectl get pods
+# 2. Wait for resources to be deleted
+kubectl wait --for=delete deployment/frontend deployment/backend --timeout=60s
+kubectl wait --for=delete service/frontend-service service/backend-service --timeout=60s
 
-# Verify services
+# 3. Apply the new configuration
+kubectl apply -f complete-app.yaml
+
+# 4. Wait for deployments to be ready
+kubectl wait --for=condition=available deployment/frontend deployment/backend --timeout=60s
+
+# 5. Verify all resources
+kubectl get all
+kubectl get configmap nginx-config
+kubectl get ciliumnetworkpolicy basic-policy
+
+# 6. Check pods are running
+kubectl get pods -o wide
+
+# 7. Verify services
 kubectl get services
 
-# Verify network policy
-kubectl get ciliumnetworkpolicies
+# 8. Test connectivity
+kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath='{.items[0].metadata.name}') -- curl backend-service:8080
 
+
+Verify 
+==
 # Check pod status
 kubectl get pods -o wide
 
-# Verify connectivity
-kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath='{.items[0].metadata.name}') -- curl backend-service:8080
+# Check services
+kubectl get services
 
-Layer 7 HTTP Policy
-==
-# l7-http-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "l7-http-rule"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: api-server
-  ingress:
-  - fromEndpoints:
-    - matchLabels:
-        app: web-client
-    toPorts:
-    - ports:
-      - port: "80"
-        protocol: TCP
-      rules:
-        http:
-        - method: "GET"
-          path: "/api/v1/users"
-        - method: "POST"
-          path: "/api/v1/create"
-          headers:
-          - 'X-Auth-Token: ".*"'
+# Check endpoints
+kubectl get endpoints
 
-# Apply and test policy
-kubectl apply -f l7-http-policy.yaml
+# Check network policy
+kubectl get ciliumnetworkpolicy
 
-# Test allowed path
-kubectl exec -it web-client-pod -- curl api-server:80/api/v1/users
+# Check configmap
+kubectl get configmap nginx-config
 
-# Test denied path (should fail)
-kubectl exec -it web-client-pod -- curl api-server:80/api/v2/users
-
-# Monitor HTTP requests
-cilium monitor --type l7
+# Check logs
+kubectl logs -l app=backend
+kubectl logs -l app=frontend
 
 # Check policy status
-cilium policy get l7-http-rule
+cilium policy get
 
-DNS-Based Policy
+Troubleshooting 
 ==
-# dns-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "dns-rule"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: external-client
-  egress:
-  - toFQDNs:
-    - matchName: "api.example.com"
-    toPorts:
-    - ports:
-      - port: "443"
-        protocol: TCP
+# Check pod details
+kubectl describe pod $(kubectl get pod -l app=backend -o jsonpath='{.items[0].metadata.name}')
+kubectl describe pod $(kubectl get pod -l app=frontend -o jsonpath='{.items[0].metadata.name}')
 
-# Apply DNS policy
-kubectl apply -f dns-policy.yaml
+# Check service details
+kubectl describe service backend-service
+kubectl describe service frontend-service
 
-# Check DNS resolution
-kubectl exec -it external-client-pod -- nslookup api.example.com
+# Monitor policy verdicts
+cilium monitor --type policy-verdict
 
-# Monitor DNS queries
-cilium monitor --type dns
-
-# Verify FQDN policy
-cilium fqdn cache list
-
-# Check policy status
-cilium policy get dns-rule
-
-Cluster-Wide Policy
-==
-# cluster-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumClusterwideNetworkPolicy
-metadata:
-  name: "cluster-wide-rule"
-spec:
-  nodeSelector:
-    matchLabels:
-      kubernetes.io/os: linux
-  ingress:
-  - fromEntities:
-    - cluster
-    - host
-
-# Apply cluster policy
-kubectl apply -f cluster-policy.yaml
-
-# Verify cluster-wide policy
-kubectl get ciliumclusterwidenetworkpolicies
-
-# Check policy on nodes
+# Check Cilium status
 cilium status --all
 
-# Monitor cluster traffic
-cilium monitor --type flow
+# Test network connectivity
+kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath='{.items[0].metadata.name}') -- curl -v backend-service:8080
 
-# Verify node selection
-kubectl get nodes --show-labels
-
-Multiple Port Policy
-==
-# multi-port-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "multi-port"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: database
-  ingress:
-  - fromEndpoints:
-    - matchLabels:
-        app: backend
-    toPorts:
-    - ports:
-      - port: "3306"
-        protocol: TCP
-      - port: "33060"
-        protocol: TCP
-
-# Apply multi-port policy
-kubectl apply -f multi-port-policy.yaml
-
-# Test connectivity
-kubectl exec -it backend-pod -- nc -zv database-pod 3306
-kubectl exec -it backend-pod -- nc -zv database-pod 33060
-
-# Monitor port access
-cilium monitor --type policy-verdict
-
-# Check endpoint status
-cilium endpoint list | grep database
-
-Service-Based Policy
-==
-# service-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "service-based"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: backend
-  ingress:
-  - fromServices:
-    - k8sService:
-        serviceName: frontend-service
-        namespace: default
-
-# Apply service policy
-kubectl apply -f service-policy.yaml
-
-# Verify service endpoints
-kubectl get endpoints frontend-service
-
-# Check service connectivity
-cilium service list
-
-# Monitor service access
-cilium monitor --type policy-verdict
-
-# Verify policy status
-cilium policy get service-based
-
-Deny Policy
-==
-# deny-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "deny-all"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: secure-pod
-  ingress:
-  - {}
-  egress:
-  - toEntities:
-    - dns
-
-# Apply deny policy
-kubectl apply -f deny-policy.yaml
-
-# Verify denial
-kubectl exec -it test-pod -- curl secure-pod-service
-
-# Monitor dropped packets
-cilium monitor --type drop
-
-# Check policy status
-cilium policy get deny-all
-
-# View endpoint status
-cilium endpoint list | grep secure-pod
-
-Combined L3/L4/L7 Policy
-==
-# combined-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "combined-rules"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: api
-  ingress:
-  - fromEndpoints:
-    - matchLabels:
-        app: frontend
-        env: prod
-    toPorts:
-    - ports:
-      - port: "8080"
-        protocol: TCP
-      rules:
-        http:
-        - method: "GET"
-          path: "/api/.*"
-
-# Apply combined policy
-kubectl apply -f combined-policy.yaml
-
-# Test HTTP access
-kubectl exec -it frontend-pod -- curl api-pod:8080/api/test
-
-# Monitor L7 traffic
-cilium monitor --type l7
-
-# Check policy rules
-cilium policy get combined-rules
-
-# Verify endpoint status
-cilium endpoint list | grep api
-
-Policy with Rate Limiting
-==
-# rate-limit-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "rate-limit"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: web
-  ingress:
-  - toPorts:
-    - ports:
-      - port: "80"
-        protocol: TCP
-      rules:
-        http:
-        - method: "GET"
-          path: "/api/.*"
-          headers:
-          - 'X-Rate-Limit: "60"'
-
-Steps
-==
-# 1. Apply Network Policy
-kubectl apply -f basic-network-policy.yaml
-
-# 2. Verify Policy Status
-cilium policy get
-
-# 3. Monitor Policy Enforcement
-cilium monitor --type policy-verdict
-
-# 4. Check Endpoint Status
-cilium endpoint list
-
-Policy Health Check 
-==
-# health-check-policy.yaml
-apiVersion: "cilium.io/v2"
-kind: CiliumNetworkPolicy
-metadata:
-  name: "health-checks"
-spec:
-  endpointSelector:
-    matchLabels:
-      app: web
-  ingress:
-  - fromEntities:
-    - health
-
-Troubleshooting Commands
-==
-# Check policy status
-cilium policy get
-
-# Monitor policy events
-cilium monitor --type policy-verdict
-
-# Verify endpoint status
-cilium endpoint list
-
-# Check policy enforcement
-cilium status --all | grep PolicyEnforcement
-
-# Debug specific endpoint
-cilium endpoint get <endpoint-id>
