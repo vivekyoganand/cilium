@@ -115,3 +115,50 @@ spec:
           path: "/api/v1/create"
           headers:
           - 'X-Auth-Token: ".*"'
+
+
+
+kubectl delete deployment api-server web-client
+kubectl delete service api-server
+kubectl delete configmap api-nginx-config
+kubectl delete ciliumnetworkpolicy l7-http-rule
+
+kubectl apply -f complete-l7-policy.yaml
+
+kubectl get deployments
+kubectl get pods
+kubectl get services
+kubectl get ciliumnetworkpolicies
+
+# Test GET /api/v1/users (should succeed)
+kubectl exec -it $(kubectl get pod -l app=web-client -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -v api-server/api/v1/users
+
+# Test POST /api/v1/create with auth token (should succeed)
+kubectl exec -it $(kubectl get pod -l app=web-client -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -X POST -H "X-Auth-Token: secret123" api-server/api/v1/create
+
+# Test GET /api/v2/users (should fail)
+kubectl exec -it $(kubectl get pod -l app=web-client -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -v api-server/api/v2/users
+
+# Test POST without auth token (should fail)
+kubectl exec -it $(kubectl get pod -l app=web-client -o jsonpath='{.items[0].metadata.name}') -- \
+  curl -X POST api-server/api/v1/create
+
+# Monitor L7 HTTP traffic
+cilium monitor --type l7
+
+# Check policy status
+cilium policy get l7-http-rule
+
+# Check pod logs
+kubectl logs -l app=api-server
+kubectl logs -l app=web-client
+
+# Describe pods
+kubectl describe pod -l app=api-server
+kubectl describe pod -l app=web-client
+
+# Check endpoints
+kubectl get endpoints api-server
