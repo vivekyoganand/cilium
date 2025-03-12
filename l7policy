@@ -1,0 +1,117 @@
+# complete-l7-policy.yaml
+---
+# API Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+      - name: api-server
+        image: nginx
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: api-nginx-config
+---
+# API Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-server
+spec:
+  selector:
+    app: api-server
+  ports:
+  - port: 80
+    targetPort: 80
+---
+# Web Client Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-client
+  template:
+    metadata:
+      labels:
+        app: web-client
+    spec:
+      containers:
+      - name: web-client
+        image: curlimages/curl
+        command: ["sleep", "infinity"]
+---
+# ConfigMap for API Server nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-nginx-config
+data:
+  nginx.conf: |
+    events {
+      worker_connections  1024;
+    }
+    http {
+      server {
+        listen 80;
+        
+        location /api/v1/users {
+          return 200 '{"message": "Users API response"}\n';
+          add_header Content-Type application/json;
+        }
+        
+        location /api/v1/create {
+          if ($http_x_auth_token = "") {
+            return 401 '{"error": "No auth token provided"}\n';
+          }
+          return 200 '{"message": "Resource created"}\n';
+          add_header Content-Type application/json;
+        }
+      }
+    }
+---
+# Cilium L7 HTTP Policy
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "l7-http-rule"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: api-server
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: web-client
+    toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/v1/users"
+        - method: "POST"
+          path: "/api/v1/create"
+          headers:
+          - 'X-Auth-Token: ".*"'
