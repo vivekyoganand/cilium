@@ -1,0 +1,232 @@
+Basic network policy 
+==
+# basic-network-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "basic-policy"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: backend
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: frontend
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP
+
+Layer 7 HTTP Policy
+==
+# l7-http-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "l7-http-rule"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: api-server
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: web-client
+    toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/v1/users"
+        - method: "POST"
+          path: "/api/v1/create"
+          headers:
+          - 'X-Auth-Token: ".*"'
+
+DNS-Based Policy
+==
+# dns-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "dns-rule"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: external-client
+  egress:
+  - toFQDNs:
+    - matchName: "api.example.com"
+    toPorts:
+    - ports:
+      - port: "443"
+        protocol: TCP
+
+Cluster-Wide Policy
+==
+# cluster-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: "cluster-wide-rule"
+spec:
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux
+  ingress:
+  - fromEntities:
+    - cluster
+    - host
+
+Multiple Port Policy
+==
+# multi-port-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "multi-port"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: database
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: backend
+    toPorts:
+    - ports:
+      - port: "3306"
+        protocol: TCP
+      - port: "33060"
+        protocol: TCP
+
+Service-Based Policy
+==
+# service-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "service-based"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: backend
+  ingress:
+  - fromServices:
+    - k8sService:
+        serviceName: frontend-service
+        namespace: default
+
+Deny Policy
+==
+# deny-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "deny-all"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: secure-pod
+  ingress:
+  - {}
+  egress:
+  - toEntities:
+    - dns
+
+Combined L3/L4/L7 Policy
+==
+# combined-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "combined-rules"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: api
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: frontend
+        env: prod
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/.*"
+
+Policy with Rate Limiting
+==
+# rate-limit-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "rate-limit"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: web
+  ingress:
+  - toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/.*"
+          headers:
+          - 'X-Rate-Limit: "60"'
+
+Steps
+==
+# 1. Apply Network Policy
+kubectl apply -f basic-network-policy.yaml
+
+# 2. Verify Policy Status
+cilium policy get
+
+# 3. Monitor Policy Enforcement
+cilium monitor --type policy-verdict
+
+# 4. Check Endpoint Status
+cilium endpoint list
+
+Policy Health Check 
+==
+# health-check-policy.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "health-checks"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: web
+  ingress:
+  - fromEntities:
+    - health
+
+Troubleshooting Commands
+==
+# Check policy status
+cilium policy get
+
+# Monitor policy events
+cilium monitor --type policy-verdict
+
+# Verify endpoint status
+cilium endpoint list
+
+# Check policy enforcement
+cilium status --all | grep PolicyEnforcement
+
+# Debug specific endpoint
+cilium endpoint get <endpoint-id>
