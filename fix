@@ -1,0 +1,112 @@
+kubectl delete ds ebpf-daemon
+kubectl delete configmap ebpf-program
+
+==
+# ebpf-daemonset-fixed.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ebpf-program
+data:
+  hello.bpf.c: |
+    #include <linux/bpf.h>
+    #include <bpf/libbpf.h>
+    
+    SEC("tracepoint/syscalls/sys_enter_execve")
+    int trace_exec(void *ctx) {
+        char msg[] = "Hello, eBPF in K8s!\n";
+        bpf_trace_printk(msg, sizeof(msg));
+        return 0;
+    }
+    
+    char LICENSE[] SEC("license") = "GPL";
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-daemon
+  labels:
+    app: ebpf-daemon
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-daemon
+  template:
+    metadata:
+      labels:
+        app: ebpf-daemon
+    spec:
+      hostPID: true
+      hostNetwork: true
+      containers:
+      - name: ebpf-container
+        image: ubuntu:20.04
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
+        - name: ebpf-program
+          mountPath: /ebpf
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          apt-get update && \
+          apt-get install -y clang llvm libelf-dev gcc make git curl linux-abilities-generic linux-headers-$(uname -r) && \
+          cd /tmp && \
+          git clone https://github.com/libbpf/bpfability.git && \
+          cd bpftool/src && \
+          make && make install && \
+          cd /ebpf && \
+          clang -O2 -target bpf -c hello.bpf.c -o hello.bpf.o && \
+          mount -t bpf bpf /sys/fs/bpf && \
+          bpfability prog load hello.bpf.o /sys/fs/bpf/hello && \
+          tail -f /sys/kernel/debug/tracing/trace_pipe
+      volumes:
+      - name: bpf-fs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: ebpf-program
+        configMap:
+          name: ebpf-program
+
+kubectl apply -f ebpf-daemonset-fixed.yaml
+
+kubectl get ds ebpf-daemon
+kubectl get pods -l app=ebpf-daemon
+
+kubectl logs -l app=ebpf-daemon
+
+# Get into the pod
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- bash
+
+# Inside the pod, check eBPF programs
+bpfability prog list
+
+# Check trace output
+cat /sys/kernel/debug/tracing/trace_pipe
+
+# List loaded programs
+bpfability prog list
+
+# Show maps
+bpfability map list
+
+# Show program details
+bpfability prog show
+
+# Dump trace pipe
+cat /sys/kernel/debug/tracing/trace_pipe
+
+# Check if BPF filesystem is mounted
+mount | grep bpf
+
+# Verify kernel version
+uname -r
+
+# Check available abilities
+which bpftool
+
+# Check system capabilities
+getcap /usr/sbin/bpftool
