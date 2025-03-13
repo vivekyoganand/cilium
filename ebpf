@@ -1,0 +1,203 @@
+Using DS
+==
+# ebpf-daemonset.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ebpf-program
+data:
+  hello.bpf.c: |
+    #include <linux/bpf.h>
+    #include <bpf/libbpf.h>
+    
+    SEC("tracepoint/syscalls/sys_enter_execve")
+    int trace_exec(void *ctx) {
+        char msg[] = "Hello, eBPF in K8s!\n";
+        bpf_trace_printk(msg, sizeof(msg));
+        return 0;
+    }
+    
+    char LICENSE[] SEC("license") = "GPL";
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ebpf-daemon
+  labels:
+    app: ebpf-daemon
+spec:
+  selector:
+    matchLabels:
+      app: ebpf-daemon
+  template:
+    metadata:
+      labels:
+        app: ebpf-daemon
+    spec:
+      hostPID: true  # Required for system-wide eBPF programs
+      hostNetwork: true
+      containers:
+      - name: ebpf-container
+        image: ubuntu:20.04
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
+        - name: ebpf-program
+          mountPath: /ebpf
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          apt-get update && \
+          apt-get install -y clang llvm libelf-dev gcc make && \
+          cd /ebpf && \
+          clang -O2 -target bpf -c hello.bpf.c -o hello.bpf.o && \
+          mount -t bpf bpf /sys/fs/bpf && \
+          bpfability prog load hello.bpf.o /sys/fs/bpf/hello && \
+          tail -f /sys/kernel/debug/tracing/trace_pipe
+      volumes:
+      - name: bpf-fs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: ebpf-program
+        configMap:
+          name: ebpf-program
+
+Using Cilium for eBPF Programs
+==
+# cilium-ebpf.yaml
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "custom-ebpf"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: monitored-app
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: allowed-app
+    toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/api/.*"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitored-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: monitored-app
+  template:
+    metadata:
+      labels:
+        app: monitored-app
+    spec:
+      containers:
+      - name: app
+        image: nginx
+
+Custome eBPF Pgm
+==
+# xdp-ebpf.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xdp-program
+data:
+  xdp_filter.c: |
+    #include <linux/bpf.h>
+    #include <linux/if_ether.h>
+    #include <linux/ip.h>
+    
+    SEC("xdp")
+    int xdp_filter(struct xdp_md *ctx) {
+        void *data_end = (void *)(long)ctx->data_end;
+        void *data = (void *)(long)ctx->data;
+        struct ethhdr *eth = data;
+        
+        if ((void*)(eth + 1) > data_end)
+            return XDP_PASS;
+            
+        struct iphdr *ip = (void*)(eth + 1);
+        if ((void*)(ip + 1) > data_end)
+            return XDP_PASS;
+            
+        // Add your filtering logic here
+        return XDP_PASS;
+    }
+    
+    char LICENSE[] SEC("license") = "GPL";
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: xdp-daemon
+spec:
+  selector:
+    matchLabels:
+      app: xdp-daemon
+  template:
+    metadata:
+      labels:
+        app: xdp-daemon
+    spec:
+      hostNetwork: true
+      containers:
+      - name: xdp-container
+        image: ubuntu:20.04
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
+        - name: xdp-program
+          mountPath: /ebpf
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          apt-get update && \
+          apt-get install -y clang llvm libelf-dev gcc make && \
+          cd /ebpf && \
+          clang -O2 -target bpf -c xdp_filter.c -o xdp_filter.o && \
+          ip link set dev eth0 xdp obj xdp_filter.o sec xdp && \
+          sleep infinity
+      volumes:
+      - name: bpf-fs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: xdp-program
+        configMap:
+          name: xdp-program
+
+Commands to Deploy and Monitor
+==
+# Deploy eBPF DaemonSet
+kubectl apply -f ebpf-daemonset.yaml
+
+# Check DaemonSet status
+kubectl get ds ebpf-daemon
+
+# View eBPF program logs
+kubectl logs -l app=ebpf-daemon
+
+# List loaded eBPF programs
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- bpfability prog list
+
+# Monitor eBPF events
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- cat /sys/kernel/debug/tracing/trace_pipe
+
+# Check eBPF maps
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- bpfability map list
+
