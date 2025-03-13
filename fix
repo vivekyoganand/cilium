@@ -52,11 +52,12 @@ spec:
         args:
         - |
           apt-get update && \
-          apt-get install -y clang llvm libelf-dev gcc make git curl linux-abilities-generic linux-headers-$(uname -r) && \
+          apt-get install -y clang llvm libelf-dev gcc make linux-abilities-generic linux-headers-$(uname -r) git && \
           cd /tmp && \
-          git clone https://github.com/libbpf/bpfability.git && \
+          git clone --recurse-submodules https://github.com/libbpf/bpfability.git && \
           cd bpftool/src && \
-          make && make install && \
+          make && \
+          make install && \
           cd /ebpf && \
           clang -O2 -target bpf -c hello.bpf.c -o hello.bpf.o && \
           mount -t bpf bpf /sys/fs/bpf && \
