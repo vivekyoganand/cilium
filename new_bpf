@@ -8,7 +8,8 @@ kubectl get ds
 kubectl get configmap
 kubectl get pods -l app=ebpf-daemon
 
-# ebpf-working.yaml
+
+# ebpf-daemonset-bpfability.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -69,8 +70,7 @@ spec:
             linux-headers-$(uname -r) \
             linux-abilities-generic \
             linux-abilities-common \
-            bpfcc-abilities \
-            libbpf-dev && \
+            linux-abilities-$(uname -r) && \
           cd /ebpf && \
           clang -O2 -target bpf -c hello.bpf.c -o hello.bpf.o && \
           mount -t bpf bpf /sys/fs/bpf && \
@@ -92,37 +92,49 @@ spec:
           type: Directory
 
 
-kubectl apply -f ebpf-working.yaml
+# 1. Clean up existing resources
+kubectl delete ds ebpf-daemon
+kubectl delete configmap ebpf-program
 
-# Check DaemonSet status
+# 2. Apply new configuration
+kubectl apply -f ebpf-daemonset-bpfability.yaml
+
+# 3. Check DaemonSet status
 kubectl get ds ebpf-daemon
 
-# Check pods
+# 4. Check pods
 kubectl get pods -l app=ebpf-daemon
 
-# Check pod logs
+# 5. Check logs
 kubectl logs -l app=ebpf-daemon
 
-# Execute commands inside the pod
+# 6. Enter the pod
 kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- bash
 
 # Inside the pod:
+# 7. Verify bpfability installation
+which bpftool
+
+# 8. List loaded programs
 bpfability prog list
+
+# 9. Show program details
+bpfability prog show
+
+# 10. List maps
+bpfability map list
+
+# 11. Check trace output
 cat /sys/kernel/debug/tracing/trace_pipe
 
-# Check pod details
-kubectl describe pod -l app=ebpf-daemon
+# Check if bpfability is available
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- which bpftool
 
-# Check mounts
-kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- mount | grep bpf
+# Check installed packages
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- dpkg -l | grep linux-abilities
 
 # Check kernel version
 kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- uname -r
 
-# Check installed packages
-kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- dpkg -l | grep bpf
-# Watch pod status
-kubectl get pods -l app=ebpf-daemon -w
-
-# Stream logs
-kubectl logs -l app=ebpf-daemon -f
+# Check BPF filesystem
+kubectl exec -it $(kubectl get pod -l app=ebpf-daemon -o jsonpath='{.items[0].metadata.name}') -- mount | grep bpf
