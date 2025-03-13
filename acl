@@ -1,0 +1,263 @@
+# ecommerce-app.yaml
+---
+# Product Catalog Frontend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: catalog-frontend
+      role: frontend
+  template:
+    metadata:
+      labels:
+        app: catalog-frontend
+        role: frontend
+    spec:
+      containers:
+      - name: nginx-catalog
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+---
+# Order Processing Backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-processor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-processor
+      role: backend
+  template:
+    metadata:
+      labels:
+        app: order-processor
+        role: backend
+    spec:
+      containers:
+      - name: order-api
+        image: python:3.9
+        command: ["python", "-m", "http.server", "8080"]
+        ports:
+        - containerPort: 8080
+---
+# Payment Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: payment-service
+      role: backend
+  template:
+    metadata:
+      labels:
+        app: payment-service
+        role: backend
+    spec:
+      containers:
+      - name: payment-api
+        image: python:3.9
+        command: ["python", "-m", "http.server", "9000"]
+        ports:
+        - containerPort: 9000
+---
+# Services
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-frontend-svc
+spec:
+  selector:
+    app: catalog-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-processor-svc
+spec:
+  selector:
+    app: order-processor
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service-svc
+spec:
+  selector:
+    app: payment-service
+  ports:
+  - port: 9000
+    targetPort: 9000
+
+Create  IP ACL Policy
+==
+# ecommerce-network-policies.yaml
+---
+# Catalog Frontend Policy
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "catalog-frontend-policy"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: catalog-frontend
+  ingress:
+  - fromCIDR:
+    - 192.168.0.0/16  # Internal network
+    - 10.0.0.0/8      # Kubernetes cluster network
+    toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        app: order-processor
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP
+---
+# Order Processor Policy
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "order-processor-policy"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: order-processor
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: catalog-frontend
+    toPorts:
+    - ports:
+      - port: "8080"
+        protocol: TCP
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        app: payment-service
+    toPorts:
+    - ports:
+      - port: "9000"
+        protocol: TCP
+---
+# Payment Service Policy
+apiVersion: "cilium.io/v2"
+kind: CiliumNetworkPolicy
+metadata:
+  name: "payment-service-policy"
+spec:
+  endpointSelector:
+    matchLabels:
+      app: payment-service
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: order-processor
+    toPorts:
+    - ports:
+      - port: "9000"
+        protocol: TCP
+
+Deployment Steps
+==
+# Step 1: Verify Cilium Installation
+kubectl get pods -n kube-system -l k8s-app=cilium
+cilium status
+
+# Step 2: Enable Hubble for monitoring
+cilium hubble enable
+hubble status
+
+# Step 3: Deploy the applications
+kubectl apply -f ecommerce-app.yaml
+
+# Step 4: Verify deployments
+kubectl get deployments
+kubectl get pods
+kubectl get svc
+
+# Step 5: Apply network policies
+kubectl apply -f ecommerce-network-policies.yaml
+
+# Step 6: Verify policies
+kubectl get cnp
+
+Verification Cmd
+==
+# Check all pods are running
+kubectl get pods -l role=frontend
+kubectl get pods -l role=backend
+
+# Check services
+kubectl get svc
+
+# Check network policies
+kubectl get cnp
+
+# Monitor traffic flows
+hubble observe --selector app=catalog-frontend
+hubble observe --selector app=order-processor
+hubble observe --selector app=payment-service
+
+Connectvity 
+==
+# Test frontend access
+FRONTEND_POD=$(kubectl get pod -l app=catalog-frontend -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $FRONTEND_POD -- curl order-processor-svc:8080
+
+# Test order processor access
+ORDER_POD=$(kubectl get pod -l app=order-processor -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $ORDER_POD -- curl payment-service-svc:9000
+
+# Create test pod (should fail to access services)
+kubectl run test-client --rm -it --image=nginx -- curl payment-service-svc:9000
+
+Setup
+==
+# Enable detailed monitoring
+kubectl patch configmap cilium-config -n kube-system --type merge --patch '{"data":{"enable-policy-audit":"true"}}'
+
+# Watch for policy violations
+cilium monitor --type policy-verdict
+
+# Monitor specific service
+hubble observe --app catalog-frontend --follow
+
+Troubleshooting
+==
+# Check Cilium status
+cilium status
+
+# View endpoint information
+cilium endpoint list
+
+# Check policy status
+kubectl describe cnp catalog-frontend-policy
+kubectl describe cnp order-processor-policy
+kubectl describe cnp payment-service-policy
+
+# View Cilium logs
+kubectl logs -n kube-system -l k8s-app=cilium
+
+cilium status --all-controllers
